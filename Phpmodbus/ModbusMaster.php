@@ -54,7 +54,7 @@ class ModbusMaster {
    * @param String $host An IP address of a Modbus TCP device. E.g. "192.168.1.1"
    * @param String $protocol Socket protocol (TCP, UDP)   
    */         
-  function ModbusMaster($host, $protocol){
+  function __construct ($host, $protocol){
     $this->socket_protocol = $protocol;
     $this->host = $host;
   }
@@ -424,12 +424,12 @@ class ModbusMaster {
    * @param int $quantity Amounth of the data to be read from device.
    * @return false|Array Success flag or array of received data.
    */
-  function readMultipleRegisters($unitId, $reference, $quantity){
+  function readMultipleRegisters($unitId, $reference, $quantity, $input = false){
     $this->status .= "readMultipleRegisters: START\n";
     // connect
     $this->connect();
-    // send FC 3    
-    $packet = $this->readMultipleRegistersPacketBuilder($unitId, $reference, $quantity);
+    // send FC 3 or 4
+    $packet = $this->readMultipleRegistersPacketBuilder($unitId, $reference, $quantity, $input ? 4 : 3);
     $this->status .= $this->printPacket($packet);    
     $this->send($packet);
     // receive response
@@ -459,6 +459,20 @@ class ModbusMaster {
   }  
   
   /**
+   * fc4
+   *
+   * Alias to {@link readMultipleRegisters} method.
+   *
+   * @param int $unitId
+   * @param int $reference
+   * @param int $quantity
+   * @return false|Array
+   */
+  function fc4($unitId, $reference, $quantity){
+    return $this->readMultipleRegisters($unitId, $reference, $quantity, true);
+  }
+
+  /**
    * readMultipleRegistersPacketBuilder
    *
    * Packet FC 3 builder - read multiple registers
@@ -468,13 +482,13 @@ class ModbusMaster {
    * @param int $quantity
    * @return string
    */
-  private function readMultipleRegistersPacketBuilder($unitId, $reference, $quantity){
+  private function readMultipleRegistersPacketBuilder($unitId, $reference, $quantity, $fc = 3){
     $dataLen = 0;
     // build data section
     $buffer1 = "";
     // build body
     $buffer2 = "";
-    $buffer2 .= iecType::iecBYTE(3);             // FC 3 = 3(0x03)
+    $buffer2 .= iecType::iecBYTE($fc);             // FC 3 = 3(0x03); FC 4 = 4(0x04)
     // build body - read section    
     $buffer2 .= iecType::iecINT($reference);  // refnumber = 12288      
     $buffer2 .= iecType::iecINT($quantity);       // quantity
@@ -502,8 +516,8 @@ class ModbusMaster {
     // check Response code
     $this->responseCode($packet);
     // get data
-    for($i=0;$i<ord($packet[8]);$i++){
-      $data[$i] = ord($packet[9+$i]);
+    for($i=0; $i < ord($packet[8]) / 2; $i++){
+      $data[$i] = (ord($packet[9+$i*2]) << 8) | ord($packet[10+$i*2]);
     }    
     return $data;
   }
@@ -873,6 +887,73 @@ class ModbusMaster {
       $data[$i] = ord($packet[9+$i]);
     }    
     return $data;
+  }
+
+  function readDeviceInformation ($unitId) {
+    $this->status .= "readDeviceInformation: START\n";
+    // connect
+    $this->connect();
+    // send FC
+    $packet = $this->readDeviceInformationPacketBuilder($unitId);
+    $this->status .= $this->printPacket($packet);
+    $this->send($packet);
+    // receive response
+    $rpacket = $this->rec();
+    $this->status .= $this->printPacket($rpacket);
+    // parse packet
+    $receivedData = $this->readDeviceInformationParser($rpacket);
+    // disconnect
+    $this->disconnect();
+    $this->status .= "readDeviceInformation: DONE\n";
+    // return
+    return $receivedData;
+  }
+
+  /**
+   * readDeviceInformationPacketBuilder
+   *
+   * Packet FC 3 builder - read multiple registers
+   *
+   * @param int $unitId
+   * @param int $reference
+   * @param int $quantity
+   * @return string
+   */
+  private function readDeviceInformationPacketBuilder ($unitId){
+    $dataLen = 0;
+    // build data section
+    $buffer1 = "";
+    // build body
+    $buffer2 = "";
+    $buffer2 .= iecType::iecBYTE(0x2B);           // FC 43 = 43(0x2B)
+    // build body - read section
+    $buffer2 .= iecType::iecBYTE(0x0E);           // MEI type 15 = device information
+    $buffer2 .= iecType::iecBYTE(0x01);           // 0x01 = Read Device ID
+    $buffer2 .= iecType::iecBYTE(0x00);           // Object 0x00 = VendorName
+    $dataLen += 4;
+    // build header
+    $buffer3 = '';
+    $buffer3 .= iecType::iecINT(rand(0,65000));   // transaction ID
+    $buffer3 .= iecType::iecINT(0);               // protocol ID
+    $buffer3 .= iecType::iecINT($dataLen + 1);    // lenght
+    $buffer3 .= iecType::iecBYTE($unitId);        //unit ID
+    // return packet string
+    return $buffer3. $buffer2. $buffer1;
+  }
+
+  /**
+   * readDeviceInformationParser
+   *
+   * FC 43 response parser
+   *
+   * @param string $packet
+   * @return array
+   */
+  private function readDeviceInformationParser($packet){
+    // check Response code
+    $this->responseCode($packet);
+
+    return substr($packet, 13);
   }
 
   /**
